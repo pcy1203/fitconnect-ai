@@ -5,7 +5,7 @@ Backend API Client for Interview System
 
 import httpx
 from typing import Optional
-from ai.interview.models import CandidateProfile
+from ai.interview.talent.models import CandidateProfile
 from config.settings import get_settings
 
 
@@ -41,7 +41,7 @@ class BackendAPIClient:
             "Content-Type": "application/json"
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
 
@@ -78,7 +78,7 @@ class BackendAPIClient:
             "Content-Type": "application/json"
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
 
@@ -109,7 +109,7 @@ class BackendAPIClient:
             "Content-Type": "application/json"
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await client.post(url, headers=headers, json=talent_card_data)
             response.raise_for_status()
 
@@ -144,9 +144,156 @@ class BackendAPIClient:
         # role 필드 추가
         payload = {**vectors_data, "role": role}
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
             response = await client.post(url, headers=headers, json=payload)
+
+            # 409 Conflict: 이미 존재하는 경우 기존 벡터 유지
+            if response.status_code == 409:
+                print(f"[INFO] Matching vector already exists, using existing one")
+                return {"id": "existing", "status": "conflict", "message": "Using existing matching vector"}
+
             response.raise_for_status()
+
+            data = response.json()
+
+            if not data.get("ok"):
+                raise ValueError(f"Backend API returned ok=false: {data}")
+
+            return data.get("data", {})
+
+    async def get_company_profile(self, access_token: str) -> dict:
+        """
+        기업 프로필 가져오기 (GET /api/me/company/)
+
+        Args:
+            access_token: JWT 액세스 토큰
+
+        Returns:
+            기업 프로필 정보 dict
+
+        Raises:
+            httpx.HTTPStatusError: API 호출 실패
+        """
+        url = f"{self.backend_url}/api/me/company/"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if not data.get("ok"):
+                raise ValueError(f"Backend API returned ok=false: {data}")
+
+            return data.get("data", {})
+
+    async def get_job_posting(self, job_posting_id: int, access_token: str) -> dict:
+        """
+        특정 채용공고 가져오기 (GET /api/me/company/job-postings)
+
+        Args:
+            job_posting_id: 채용공고 ID
+            access_token: JWT 액세스 토큰
+
+        Returns:
+            채용공고 정보 dict
+
+        Raises:
+            httpx.HTTPStatusError: API 호출 실패
+            ValueError: 채용공고를 찾을 수 없음
+        """
+        url = f"{self.backend_url}/api/me/company/job-postings"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if not data.get("ok"):
+                raise ValueError(f"Backend API returned ok=false: {data}")
+
+            postings = data.get("data", [])
+
+            # job_posting_id로 필터링
+            for posting in postings:
+                if posting.get("id") == job_posting_id:
+                    return posting
+
+            raise ValueError(f"Job posting with id {job_posting_id} not found")
+
+    async def create_job_posting(self, access_token: str, job_posting_data: dict) -> dict:
+        """
+        채용공고 생성 (POST /api/me/company/job-postings)
+
+        Args:
+            access_token: JWT 액세스 토큰
+            job_posting_data: 채용공고 데이터 (선택적 필드 포함)
+
+        Returns:
+            생성된 채용공고 정보 dict
+
+        Raises:
+            httpx.HTTPStatusError: API 호출 실패
+            ValueError: API 응답 오류
+        """
+        url = f"{self.backend_url}/api/me/company/job-postings"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.post(url, headers=headers, json=job_posting_data)
+
+            # 201 Created도 성공으로 처리
+            if response.status_code not in [200, 201]:
+                error_detail = response.text
+                raise ValueError(f"Backend API error {response.status_code}: {error_detail}")
+
+            data = response.json()
+
+            if not data.get("ok"):
+                raise ValueError(f"Backend API returned ok=false: {data}")
+
+            return data.get("data", {})
+
+    async def create_job_posting_card(self, access_token: str, card_data: dict) -> dict:
+        """
+        채용공고 카드 생성 (POST /api/job_posting_cards/)
+
+        Args:
+            access_token: JWT 액세스 토큰
+            card_data: 카드 데이터 (header_title, responsibilities, etc.)
+
+        Returns:
+            생성된 카드 정보 dict
+
+        Raises:
+            httpx.HTTPStatusError: API 호출 실패
+            ValueError: API 응답 오류
+        """
+        url = f"{self.backend_url}/api/job_posting_cards"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.post(url, headers=headers, json=card_data)
+
+            # 201 Created도 성공으로 처리
+            if response.status_code not in [200, 201]:
+                error_detail = response.text
+                raise ValueError(f"Backend API error {response.status_code}: {error_detail}")
 
             data = response.json()
 

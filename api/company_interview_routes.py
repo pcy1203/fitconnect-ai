@@ -18,20 +18,19 @@ from typing import Optional, Dict
 import uuid
 from datetime import datetime
 
-from ai.interview.company_general import (
+from ai.interview.company.general import (
     CompanyGeneralInterview,
     analyze_company_general_interview
 )
-from ai.interview.company_technical import (
+from ai.interview.company.technical import (
     CompanyTechnicalInterview,
     analyze_company_technical_interview
 )
-from ai.interview.company_situational import (
+from ai.interview.company.situational import (
     CompanySituationalInterview,
     analyze_company_situational_interview
 )
-from ai.interview.company_job_posting import generate_job_posting_card
-from ai.interview.company_models import (
+from ai.interview.company.models import (
     CompanyGeneralAnalysis,
     TechnicalRequirements,
     TeamCultureProfile,
@@ -58,6 +57,7 @@ class CompanyInterviewSession:
         self.session_id = session_id
         self.company_name = company_name
         self.existing_jd = existing_jd
+        self.company_info: Optional[dict] = None  # 기업 정보 (Technical에서 로드)
 
         # 면접 인스턴스
         self.general_interview = CompanyGeneralInterview()
@@ -78,8 +78,9 @@ class CompanyInterviewSession:
 
 class StartCompanyInterviewRequest(BaseModel):
     """기업 면접 시작 요청"""
-    company_name: str
-    existing_jd: Optional[str] = None  # 기존 JD (선택)
+    access_token: str
+    company_name: Optional[str] = None  # 선택: 없으면 백엔드에서 자동 로드
+    existing_jd: Optional[str] = None  # 기존 JD (선택, deprecated - Technical에서 job_posting_id 사용 권장)
 
 
 class StartInterviewResponse(BaseModel):
@@ -94,6 +95,13 @@ class AnswerRequest(BaseModel):
     """답변 제출 요청"""
     session_id: str
     answer: str
+
+
+class StartTechnicalInterviewRequest(BaseModel):
+    """기업 Technical 면접 시작 요청"""
+    session_id: str
+    access_token: str
+    job_posting_id: Optional[int] = None  # 선택: 없으면 JD 없이 진행
 
 
 class AnswerResponse(BaseModel):
@@ -123,17 +131,32 @@ async def start_company_general_interview(request: StartCompanyInterviewRequest)
     기업 General 면접 시작
 
     Args:
-        company_name: 회사명
-        existing_jd: 기존 Job Description (선택)
+        request: access_token, company_name (optional), existing_jd (optional)
 
     Returns:
         session_id, 첫 질문
     """
+    # 회사명 가져오기 (없으면 백엔드에서 로드)
+    company_name = request.company_name
+    if not company_name:
+        try:
+            from ai.interview.client import get_backend_client
+
+            backend_client = get_backend_client()
+            company_profile = await backend_client.get_company_profile(
+                access_token=request.access_token
+            )
+            company_name = company_profile.get("basic", {}).get("name", "기업")
+            print(f"[INFO] Loaded company name from backend: {company_name}")
+        except Exception as e:
+            print(f"[WARNING] Failed to load company profile: {str(e)}")
+            company_name = "기업"  # 기본값
+
     # 세션 생성
     session_id = str(uuid.uuid4())
     session = CompanyInterviewSession(
         session_id=session_id,
-        company_name=request.company_name,
+        company_name=company_name,
         existing_jd=request.existing_jd
     )
     company_sessions[session_id] = session
@@ -274,21 +297,21 @@ async def get_company_general_analysis(session_id: str):
 # ==================== Technical Interview APIs ====================
 
 @company_interview_router.post("/technical/start", response_model=AnswerResponse)
-async def start_company_technical_interview(session_id: str):
+async def start_company_technical_interview(request: StartTechnicalInterviewRequest):
     """
     기업 Technical 면접 시작
 
     Args:
-        session_id: General 면접 세션 ID
+        request: session_id, access_token, job_posting_id (optional)
 
     Returns:
         첫 질문 (고정 5개 중 첫번째)
     """
     # 세션 확인
-    if session_id not in company_sessions:
+    if request.session_id not in company_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = company_sessions[session_id]
+    session = company_sessions[request.session_id]
 
     # General 면접 완료 확인
     if not session.general_interview.is_finished():
@@ -302,10 +325,45 @@ async def start_company_technical_interview(session_id: str):
         answers = session.general_interview.get_answers()
         session.general_analysis = analyze_company_general_interview(answers)
 
+    # 기업 정보 및 JD 가져오기
+    from ai.interview.client import get_backend_client
+    from ai.interview.company.technical import format_job_posting_to_jd
+
+    backend_client = get_backend_client()
+
+    # 1. 기업 정보 가져오기
+    company_info = None
+    try:
+        company_profile = await backend_client.get_company_profile(
+            access_token=request.access_token
+        )
+        company_info = {
+            "culture": company_profile.get("about", {}).get("culture"),
+            "vision_mission": company_profile.get("about", {}).get("vision_mission"),
+            "business_domains": company_profile.get("about", {}).get("business_domains"),
+        }
+        print(f"[INFO] Loaded company info for dynamic questions")
+    except Exception as e:
+        print(f"[WARNING] Failed to load company profile: {str(e)}")
+
+    # 2. JD 가져오기 (job_posting_id가 있으면)
+    existing_jd = None
+    if request.job_posting_id:
+        try:
+            job_posting = await backend_client.get_job_posting(
+                job_posting_id=request.job_posting_id,
+                access_token=request.access_token
+            )
+            existing_jd = format_job_posting_to_jd(job_posting)
+            print(f"[INFO] Loaded JD for job posting {request.job_posting_id}")
+        except Exception as e:
+            print(f"[WARNING] Failed to load job posting: {str(e)}")
+
     # Technical Interview 초기화
     session.technical_interview = CompanyTechnicalInterview(
         general_analysis=session.general_analysis,
-        existing_jd=session.existing_jd
+        existing_jd=existing_jd,
+        company_info=company_info
     )
 
     # 첫 질문
@@ -438,7 +496,8 @@ async def start_company_situational_interview(session_id: str):
     # Situational Interview 초기화
     session.situational_interview = CompanySituationalInterview(
         general_analysis=session.general_analysis,
-        technical_requirements=session.technical_requirements
+        technical_requirements=session.technical_requirements,
+        company_info=session.company_info
     )
 
     # 첫 질문
@@ -537,22 +596,22 @@ async def get_company_situational_analysis(session_id: str):
 
 # ==================== Job Posting Card API ====================
 
-@company_interview_router.get("/job-posting/{session_id}", response_model=JobPostingCard)
-async def get_job_posting_card(
+@company_interview_router.post("/job-posting")
+async def create_job_posting_from_interview(
     session_id: str,
-    deadline: Optional[str] = None
+    access_token: str
 ):
     """
-    최종 채용 공고 카드 생성
+    면접 결과를 백엔드에 채용공고로 저장
 
     모든 면접(General + Technical + Situational) 완료 후 호출
 
     Args:
         session_id: 세션 ID
-        deadline: 마감일 (선택, 예: "2024-12-31")
+        access_token: JWT 액세스 토큰
 
     Returns:
-        JobPostingCard (최종 채용 공고)
+        생성된 채용공고 정보
     """
     # 세션 확인
     if session_id not in company_sessions:
@@ -599,17 +658,70 @@ async def get_job_posting_card(
             technical_requirements=session.technical_requirements
         )
 
-    # Job Posting Card 생성
-    job_posting = generate_job_posting_card(
-        company_name=session.company_name,
+    # 면접 결과를 JD 데이터로 변환
+    from ai.interview.company.jd_generator import create_job_posting_from_interview
+
+    job_posting_data = create_job_posting_from_interview(
         general_analysis=session.general_analysis,
         technical_requirements=session.technical_requirements,
-        situational_profile=session.situational_profile,
-        existing_jd=session.existing_jd,
-        deadline=deadline
+        team_fit_analysis=session.situational_profile
     )
 
-    return job_posting
+    # 백엔드에 JD POST
+    from ai.interview.client import get_backend_client
+
+    backend_client = get_backend_client()
+    created_job_posting = await backend_client.create_job_posting(
+        access_token=access_token,
+        job_posting_data=job_posting_data
+    )
+
+    job_posting_id = created_job_posting.get("id")
+
+    # 카드 데이터 생성 및 POST
+    from ai.interview.company.jd_generator import create_job_posting_card_from_interview
+
+    card_data = create_job_posting_card_from_interview(
+        general_analysis=session.general_analysis,
+        technical_requirements=session.technical_requirements,
+        team_fit_analysis=session.situational_profile,
+        job_posting_id=job_posting_id,
+        company_name=session.company_name,
+        job_posting_data=job_posting_data
+    )
+
+    created_card = await backend_client.create_job_posting_card(
+        access_token=access_token,
+        card_data=card_data
+    )
+
+    # 매칭 벡터 생성 및 POST
+    from ai.matching.company_vector_generator import generate_company_matching_vectors
+
+    matching_result = generate_company_matching_vectors(
+        general_analysis=session.general_analysis,
+        technical_requirements=session.technical_requirements,
+        team_fit_analysis=session.situational_profile,
+        company_name=session.company_name,
+        job_posting_data=job_posting_data
+    )
+
+    # 백엔드에 매칭 벡터 POST
+    created_vectors = await backend_client.post_matching_vectors(
+        vectors_data=matching_result["vectors"],
+        access_token=access_token,
+        role="company"
+    )
+
+    return {
+        "success": True,
+        "job_posting_id": job_posting_id,
+        "card_id": created_card.get("id"),
+        "matching_vector_id": created_vectors.get("id"),
+        "job_posting": created_job_posting,
+        "card": created_card,
+        "matching_texts": matching_result["texts"]
+    }
 
 
 # ==================== Session Management APIs ====================
