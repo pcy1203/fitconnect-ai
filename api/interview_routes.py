@@ -1,10 +1,10 @@
+# ==================== Talent Interview API ====================
 """
-Interview API Routes
+> POST /interview/general/start
+  - 인터뷰 시작, 첫 질문 반환
+> POST /interview/general/answer - 음성 업로드, STT, 답변 저장, 다음 질문 반환
+> GET /interview/general/analysis/{session_id} - 최종 분석 결과
 
-프론트엔드 플로우:
-1. POST /interview/general/start - 인터뷰 시작, 첫 질문 반환
-2. POST /interview/general/answer - 음성 업로드, STT, 답변 저장, 다음 질문 반환
-3. GET /interview/general/analysis/{session_id} - 최종 분석 결과
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
@@ -35,49 +35,48 @@ from ai.interview.talent.models import CandidateProfile, CandidateProfileCard
 from ai.interview.client import get_backend_client
 from ai.stt.service import get_stt_service
 
-
 # 라우터 생성
 interview_router = APIRouter(prefix="/interview", tags=["Interview"])
 
 
 # ==================== Utility Functions ====================
 
-async def process_audio_file(audio: UploadFile) -> str:
-    """
-    음성 파일을 STT로 변환하는 공통 함수
+# async def process_audio_file(audio: UploadFile) -> str:
+#     """
+#     음성 파일을 STT로 변환하는 공통 함수
 
-    Args:
-        audio: 업로드된 음성 파일
+#     Args:
+#         audio: 업로드된 음성 파일
 
-    Returns:
-        변환된 텍스트
+#     Returns:
+#         변환된 텍스트
 
-    Raises:
-        HTTPException: STT 처리 실패 시
-    """
-    import tempfile
-    import os
+#     Raises:
+#         HTTPException: STT 처리 실패 시
+#     """
+#     import tempfile
+#     import os
 
-    # 음성 파일 임시 저장
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio.filename)[1]) as tmp_file:
-        content = await audio.read()
-        tmp_file.write(content)
-        tmp_path = tmp_file.name
+#     # 음성 파일 임시 저장
+#     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio.filename)[1]) as tmp_file:
+#         content = await audio.read()
+#         tmp_file.write(content)
+#         tmp_path = tmp_file.name
 
-    try:
-        # STT 처리
-        stt_service = get_stt_service()
-        answer_text = stt_service.transcribe(tmp_path)
-        return answer_text
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"STT 처리 실패: {str(e)}"
-        )
-    finally:
-        # 임시 파일 삭제
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+#     try:
+#         # STT 처리
+#         stt_service = get_stt_service()
+#         answer_text = stt_service.transcribe(tmp_path)
+#         return answer_text
+#     except Exception as e:
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"STT 처리 실패: {str(e)}"
+#         )
+#     finally:
+#         # 임시 파일 삭제
+#         if os.path.exists(tmp_path):
+#             os.remove(tmp_path)
 
 
 def get_session(session_id: str) -> "InterviewSession":
@@ -102,34 +101,31 @@ def get_session(session_id: str) -> "InterviewSession":
 # TODO: 나중에 Redis 또는 DB로 교체
 interview_sessions = {}
 
-
 class InterviewSession:
     """인터뷰 세션 데이터"""
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.interview = GeneralInterview()
-        self.general_analysis = None  # 구조화 면접 분석 결과
-        self.technical_interview = None  # 직무 적합성 면접
-        self.situational_interview = None  # 상황 면접
+        self.general_interview = None  # 구조화 면접 분석 결과
+        self.technical_interview = None  # 직무 적합성 면접 분석 결과
+        self.situational_interview = None  # 상황 면접 분석 결과
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
 
 
 # ==================== Request/Response Models ====================
 
-class StartInterviewResponse(BaseModel):
+class StartResponse(BaseModel):
     """인터뷰 시작 응답"""
     session_id: str
     question: str
     question_number: int
     total_questions: int
 
-
 class AnswerRequest(BaseModel):
     """답변 제출 요청 (텍스트 직접 입력용)"""
     session_id: str
     answer: str
-
 
 class AnswerResponse(BaseModel):
     """답변 제출 응답"""
@@ -139,65 +135,48 @@ class AnswerResponse(BaseModel):
     next_question: Optional[str] = None
     is_finished: bool
 
-
-class AnalysisResponse(BaseModel):
+class GeneralInterviewAnalysisResponse(BaseModel):
     """최종 분석 결과"""
     session_id: str
-    key_themes: List[str]
-    interests: List[str]
-    work_style_hints: List[str]
-    emphasized_experiences: List[str]
-    technical_keywords: List[str]
+    keywords: List[str]
+    experiences: List[str]
+    strengths: List[str]
+    job_competencies: List[str]
+    working_styles: List[str]
+    technical_stacks: List[str]
 
 
 # ==================== API Endpoints ====================
 
-@interview_router.post("/general/start", response_model=StartInterviewResponse)
+
+# ==============================================================
+# POST /general/start : 구조화 면접 시작
+# ==============================================================
+@interview_router.post("/general/start", response_model=StartResponse)
 async def start_general_interview():
-    """
-    구조화 면접 시작
-
-    Returns:
-        - session_id: 세션 ID (이후 요청에 사용)
-        - question: 첫 번째 질문
-        - question_number: 현재 질문 번호 (1)
-        - total_questions: 전체 질문 수 (5)
-    """
-    # 세션 생성
+    """구조화 면접 시작"""
     session_id = str(uuid.uuid4())
-    session = InterviewSession(session_id)
-    interview_sessions[session_id] = session
+    session = InterviewSession(session_id)  # 세션 생성
+    interview_sessions[session_id] = session  # 세션 저장
+    question = session.interview.get_next_question()  # 질문 생성
 
-    # 첫 질문
-    first_question = session.interview.get_next_question()
-
-    return StartInterviewResponse(
+    return StartResponse(
         session_id=session_id,
-        question=first_question,
-        question_number=1,
-        total_questions=len(session.interview.questions)
+        question=question,
+        question_number=session.interview.current_question_num,
+        total_questions=session.interview.total_questions_num,
     )
 
 
+# ==============================================================
+# POST /general/answer/text : 구조화 면접 시작
+# ==============================================================
 @interview_router.post("/general/answer/text", response_model=AnswerResponse)
-async def submit_text_answer(request: AnswerRequest):
-    """
-    텍스트 답변 제출 (개발/테스트용)
-
-    Args:
-        session_id: 세션 ID
-        answer: 답변 텍스트
-
-    Returns:
-        - next_question: 다음 질문 (없으면 None)
-        - is_finished: 모든 질문 완료 여부
-    """
-    # 세션 확인
-    session = get_session(request.session_id)
-    session.updated_at = datetime.now()
-
-    # 답변 제출
-    result = session.interview.submit_answer(request.answer)
+async def submit_general_interview(request: AnswerRequest):
+    """구조화 면접 답변 제출"""
+    session = get_session(request.session_id)  # 세션 확인
+    session.updated_at = datetime.now()  # 세션 업데이트
+    result = session.interview.submit_answer(request.answer)  # 답변 제출
 
     return AnswerResponse(
         success=True,
@@ -208,115 +187,109 @@ async def submit_text_answer(request: AnswerRequest):
     )
 
 
-@interview_router.post("/general/answer/audio", response_model=AnswerResponse)
-async def submit_audio_answer(
-    session_id: str,
-    audio: UploadFile = File(...)
-):
-    """
-    음성 답변 제출 (실제 사용)
+# @interview_router.post("/general/answer/audio", response_model=AnswerResponse)
+# async def submit_audio_answer(
+#     session_id: str,
+#     audio: UploadFile = File(...)
+# ):
+#     """
+#     음성 답변 제출 (실제 사용)
 
-    Args:
-        session_id: 세션 ID
-        audio: 음성 파일 (MP3, WAV, M4A 등)
+#     Args:
+#         session_id: 세션 ID
+#         audio: 음성 파일 (MP3, WAV, M4A 등)
 
-    Returns:
-        - next_question: 다음 질문
-        - is_finished: 완료 여부
-    """
-    # 세션 확인
-    session = get_session(session_id)
-    session.updated_at = datetime.now()
+#     Returns:
+#         - next_question: 다음 질문
+#         - is_finished: 완료 여부
+#     """
+#     # 세션 확인
+#     session = get_session(session_id)
+#     session.updated_at = datetime.now()
 
-    # STT 처리
-    answer_text = await process_audio_file(audio)
+#     # STT 처리
+#     answer_text = await process_audio_file(audio)
 
-    # 답변 제출
-    result = session.interview.submit_answer(answer_text)
+#     # 답변 제출
+#     result = session.interview.submit_answer(answer_text)
 
-    return AnswerResponse(
-        success=True,
-        question_number=result["question_number"],
-        total_questions=result["total_questions"],
-        next_question=result["next_question"],
-        is_finished=session.interview.is_finished()
-    )
+#     return AnswerResponse(
+#         success=True,
+#         question_number=result["question_number"],
+#         total_questions=result["total_questions"],
+#         next_question=result["next_question"],
+#         is_finished=session.interview.is_finished()
+#     )
 
 
-@interview_router.get("/general/analysis/{session_id}", response_model=AnalysisResponse)
-async def get_analysis(session_id: str):
-    """
-    구조화 면접 분석 결과 조회
 
-    Args:
-        session_id: 세션 ID
-
-    Returns:
-        분석 결과 (key_themes, interests, technical_keywords 등)
-    """
-    # 세션 확인
-    session = get_session(session_id)
-
-    # 완료 확인
-    if not session.interview.is_finished():
+# ==============================================================
+# POST /general/analysis/{session_id} : 구조화 면접 종료/분석
+# ==============================================================
+@interview_router.get("/general/analysis/{session_id}", response_model=GeneralInterviewAnalysisResponse)
+async def get_analysis_general_interview(session_id: str):
+    """구조화 면접 종료/분석"""
+    session = get_session(session_id)  # 세션 확인
+    if not session.interview.is_finished():  # 완료 확인
         raise HTTPException(
             status_code=400,
-            detail=f"Interview not finished. {session.interview.current_index}/{len(session.interview.questions)} questions answered."
+            detail=f"면접이 완료되지 않았습니다. ({session.interview.current_index}/{len(session.interview.questions)})"
         )
+    questions_and_answers = session.interview.get_questions_and_answers()
+    analysis = analyze_general_interview(questions_and_answers)
 
-    # 답변 분석
-    answers = session.interview.get_answers()
-    analysis = analyze_general_interview(answers)
-
-    return AnalysisResponse(
+    return GeneralInterviewAnalysisResponse(
         session_id=session_id,
-        key_themes=analysis.key_themes,
-        interests=analysis.interests,
-        work_style_hints=analysis.work_style_hints,
-        emphasized_experiences=analysis.emphasized_experiences,
-        technical_keywords=analysis.technical_keywords
+        keywords=analysis.keywords,
+        experiences=analysis.experiences,
+        strengths=analysis.strengths,
+        job_competencies=analysis.job_competencies,
+        working_styles=analysis.working_styles,
+        technical_stacks=analysis.technical_stacks
     )
 
 
-@interview_router.get("/general/session/{session_id}")
-async def get_session_info(session_id: str):
-    """
-    세션 정보 조회 (디버깅용)
+# @interview_router.get("/general/session/{session_id}")
+# async def get_session_info(session_id: str):
+#     """
+#     세션 정보 조회 (디버깅용)
 
-    Args:
-        session_id: 세션 ID
+#     Args:
+#         session_id: 세션 ID
 
-    Returns:
-        세션 상태, 진행도 등
-    """
-    session = get_session(session_id)
+#     Returns:
+#         세션 상태, 진행도 등
+#     """
+#     session = get_session(session_id)
 
-    return {
-        "session_id": session_id,
-        "created_at": session.created_at.isoformat(),
-        "updated_at": session.updated_at.isoformat(),
-        "current_question": session.interview.current_index,
-        "total_questions": len(session.interview.questions),
-        "is_finished": session.interview.is_finished(),
-        "answers_count": len(session.interview.answers)
-    }
+#     return {
+#         "session_id": session_id,
+#         "created_at": session.created_at.isoformat(),
+#         "updated_at": session.updated_at.isoformat(),
+#         "current_question": session.interview.current_index,
+#         "total_questions": len(session.interview.questions),
+#         "is_finished": session.interview.is_finished(),
+#         "answers_count": len(session.interview.answers)
+#     }
+
+# @interview_router.delete("/general/session/{session_id}")
+# async def delete_session(session_id: str):
+#     """
+#     세션 삭제
+
+#     Args:
+#         session_id: 세션 ID
+#     """
+#     get_session(session_id)  # 존재 여부 확인
+#     del interview_sessions[session_id]
+
+#     return {"message": "Session deleted successfully"}
 
 
-@interview_router.delete("/general/session/{session_id}")
-async def delete_session(session_id: str):
-    """
-    세션 삭제
 
-    Args:
-        session_id: 세션 ID
-    """
-    get_session(session_id)  # 존재 여부 확인
-    del interview_sessions[session_id]
-
-    return {"message": "Session deleted successfully"}
-
-
-# ==================== Technical Interview APIs ====================
+# ==============================================================
+# 
+# ==============================================================
 
 class StartTechnicalRequest(BaseModel):
     """직무 적합성 면접 시작 요청"""
@@ -370,9 +343,9 @@ async def start_technical_interview(request: StartTechnicalRequest):
         )
 
     # 구조화 면접 분석 (아직 안했으면)
-    if not session.general_analysis:
+    if not session.general_interview:
         answers = session.interview.get_answers()
-        session.general_analysis = analyze_general_interview(answers)
+        session.general_interview = analyze_general_interview(answers)
 
     # 백엔드 API에서 프로필 가져오기
     backend_client = get_backend_client()
@@ -395,7 +368,7 @@ async def start_technical_interview(request: StartTechnicalRequest):
     # Technical Interview 초기화
     session.technical_interview = TechnicalInterview(
         profile=profile,
-        general_analysis=session.general_analysis
+        general_interview=session.general_interview
     )
 
     # 첫 질문
@@ -715,7 +688,7 @@ async def get_persona_report(session_id: str):
 class GenerateAndPostCardRequest(BaseModel):
     """프로필 카드 생성 및 백엔드 전송 요청"""
     session_id: str
-    access_token: str  # JWT 토큰
+    access_token: str
 
 
 class GenerateAndPostCardResponse(BaseModel):
@@ -747,16 +720,12 @@ async def generate_and_post_profile_card(request: GenerateAndPostCardRequest):
     Returns:
         생성된 카드 + 백엔드 응답
     """
-    # 세션 확인
-    session = get_session(request.session_id)
-
-    # 모든 면접 완료 확인
+    session = get_session(request.session_id)  # 세션 확인
     if not session.interview.is_finished():
         raise HTTPException(
             status_code=400,
             detail="General interview not completed"
         )
-
     if not session.technical_interview or not session.technical_interview.is_finished():
         raise HTTPException(
             status_code=400,
@@ -773,9 +742,9 @@ async def generate_and_post_profile_card(request: GenerateAndPostCardRequest):
     profile = session.technical_interview.profile
 
     # 1. General Interview 분석 (캐시 확인)
-    if not session.general_analysis:
+    if not session.general_interview:
         answers = session.interview.get_answers()
-        session.general_analysis = analyze_general_interview(answers)
+        session.general_interview = analyze_general_interview(answers)
 
     # General Interview 원본 Q&A
     general_qa = session.interview.get_answers()  # [{"question": ..., "answer": ...}, ...]
@@ -783,7 +752,7 @@ async def generate_and_post_profile_card(request: GenerateAndPostCardRequest):
     # 2. General Interview 카드 파트 추출
     general_part = analyze_general_interview_for_card(
         candidate_profile=profile,
-        general_analysis=session.general_analysis,
+        general_interview=session.general_interview,
         answers=general_qa
     )
 
@@ -902,9 +871,9 @@ async def generate_matching_vectors(request: GenerateMatchingVectorsRequest):
     profile = session.technical_interview.profile
 
     # General Interview 분석 (캐시 확인)
-    if not session.general_analysis:
+    if not session.general_interview:
         answers = session.interview.get_answers()
-        session.general_analysis = analyze_general_interview(answers)
+        session.general_interview = analyze_general_interview(answers)
 
     # Profile Card 확인/생성
     # (이미 생성되어 있다면 재사용, 없으면 새로 생성)
@@ -917,7 +886,7 @@ async def generate_matching_vectors(request: GenerateMatchingVectorsRequest):
     # 카드 파트 추출
     general_part = analyze_general_interview_for_card(
         candidate_profile=profile,
-        general_analysis=session.general_analysis,
+        general_interview=session.general_interview,
         answers=general_qa
     )
 
@@ -945,7 +914,7 @@ async def generate_matching_vectors(request: GenerateMatchingVectorsRequest):
     # 매칭 벡터 생성 (LLM + Embedding)
     result = generate_talent_matching_vectors(
         candidate_profile=profile,
-        general_analysis=session.general_analysis,
+        general_interview=session.general_interview,
         technical_results=technical_results,
         situational_report=situational_report
     )

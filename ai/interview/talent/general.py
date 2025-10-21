@@ -1,128 +1,94 @@
-"""
-General Interview (구조화 면접)
-
-- 고정 질문 5-7개
-- 순차 진행
-- 답변 분석으로 직무 면접 개인화
-"""
-
-from typing import List, Optional
+# ==================== Talent General Interview ====================
+from config.settings import get_settings
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-
+from typing import List, Optional
 from ai.interview.talent.models import (
     CandidateProfile,
     GeneralInterviewAnalysis,
     GeneralInterviewCardPart,
 )
-from config.settings import get_settings
+from ai.interview.talent.baseinterview import BaseInterview
 
 
-# 구조화 면접 고정 질문
+# =====================================================================
+# ==================== General Interview Questions ====================
+# =====================================================================
 GENERAL_QUESTIONS = [
-    "간단한 자기소개와 함께, 최근 6개월 동안 가장 몰입했던 경험을 이야기해 주세요.",
-    "가장 의미 있었던 프로젝트나 업무 경험을 말씀해 주세요. 맡으신 역할과 결과도 함께 알려주세요.",
-    "팀원들과 협업할 때 본인만의 강점은 무엇이라고 생각하시나요?",
-    "일을 할 때 가장 중요하게 생각하는 가치는 무엇인가요?",
-    "앞으로 어떤 커리어를 그리고 계신가요?"
+    "최근 6개월 동안 가장 몰입했던 일은 무엇인가요? 왜 그 경험에 몰입했고, 어떤 결과를 얻었는지 말씀해 주세요.",
+    "가장 성과를 냈다고 생각하는 프로젝트나 업무 경험을 소개해 주세요. 어떤 역할을 맡았고, 결과는 어땠나요?",
+    "팀원들과 협업할 때 본인만의 강점은 무엇이라고 생각하시나요? 구체적인 사례와 함께 이야기 해주세요.",
+    "일을 할 때 가장 중요하게 생각하는 가치는 무엇인가요? 해당 가치가 실제 행동으로 드러난 사례를 말씀해 주세요.",
+    "앞으로 어떤 역량을 더 발전시키고 싶나요? 커리어에 대한 계획을 포함하여 말씀해 주세요."
 ]
 
 
-class GeneralInterview:
-    """구조화 면접 관리 클래스"""
+# =================================================================
+# ==================== General Interview Model ====================
+# =================================================================
+class GeneralInterview(BaseInterview):
+    """구조화 면접"""
 
     def __init__(self, questions: Optional[List[str]] = None):
-        """
-        Args:
-            questions: 커스텀 질문 리스트 (없으면 기본 질문 사용)
-        """
+        super().__init__()
         self.questions = questions or GENERAL_QUESTIONS
-        self.current_index = 0
-        self.answers = []
+        self.total_questions_num = len(self.questions)
 
     def get_next_question(self) -> Optional[str]:
-        """다음 질문 반환"""
-        if self.current_index < len(self.questions):
-            question = self.questions[self.current_index]
-            self.current_index += 1
+        if self.current_question_num < self.total_questions_num:
+            question = self.questions[self.current_question_num]
+            self.current_question_num += 1
             return question
         return None
-
-    def submit_answer(self, answer: str) -> dict:
-        """답변 제출"""
-        if self.current_index == 0:
-            raise ValueError("질문을 먼저 받아야 합니다.")
-
-        question = self.questions[self.current_index - 1]
-        self.answers.append({
-            "question": question,
-            "answer": answer
-        })
-
-        # 다음 질문 가져오기 (current_index 증가됨)
-        next_q = self.get_next_question()
-
-        return {
-            "submitted": True,
-            "question_number": self.current_index,  # 이미 증가된 상태
-            "total_questions": len(self.questions),
-            "next_question": next_q
-        }
-
-    def is_finished(self) -> bool:
-        """모든 질문 완료 여부"""
-        return self.current_index >= len(self.questions)
-
-    def get_answers(self) -> List[dict]:
-        """모든 Q&A 반환"""
-        return self.answers
+    
+    def analyze_answer(self, answer):
+        return super().analyze_answer(answer)
 
 
-def analyze_general_interview(answers: List[dict]) -> GeneralInterviewAnalysis:
-    """
-    구조화 면접 답변들을 종합 분석
-
-    Args:
-        answers: [{"question": str, "answer": str}, ...]
-
-    Returns:
-        GeneralInterviewAnalysis
-    """
-    # 모든 Q&A를 하나의 텍스트로 결합
-    all_qa = "\n\n".join([
-        f"질문: {a['question']}\n답변: {a['answer']}"
-        for a in answers
+# ===================================================================
+# ==================== General Interview Analysis ====================
+# ===================================================================
+def analyze_general_interview(questions_and_answers: List[dict]) -> GeneralInterviewAnalysis:
+    """구조화 면접 답변 분석"""
+    all_questions_and_answers = "\n\n".join([
+        f"질문: {question_and_answer['question']}\n답변: {question_and_answer['answer']}"
+        for question_and_answer in questions_and_answers
     ])
-
     prompt = ChatPromptTemplate.from_messages([
         ("system", """당신은 채용 전문가입니다.
 
-구조화 면접 답변들을 분석하여, 직무 적합성 면접을 개인화하는데 필요한 정보를 추출하세요.
+        지원자의 구조화 면접 답변들을 분석하여, 직무 적합성 면접을 개인화하기 위한 핵심 정보를 추출하세요.
 
-**분석 목표:**
-1. 지원자가 자주 언급하는 테마/키워드 찾기
-2. 관심있어 하는 기술 분야 파악
-3. 업무 스타일 힌트 추출
-4. 강조하는 경험 식별
-5. 언급된 기술 키워드 수집
+        **분석 목표:**
+        1. 답변 전반에서 반복적으로 등장하는 주요 키워드
+        2. 지원자가 중요하게 언급한 대표 경험과 성과
+        3. 지원자의 핵심 역량과 행동적 강점
+        4. 지원자의 직무 역량
+        5. 지원자의 업무 방식과 협업 스타일, 성장 가능성
+        6. 지원자의 기술 스택 (기술 직군에 한해) 혹은 활용 가능한 툴 (무관한 직무는 빈 값 가능)
 
-**중요:**
-- 실제 답변에 있는 내용만 추출
-- 추측하거나 과장하지 말 것
-- 구체적이고 명확한 키워드만
-"""),
-        ("user", all_qa)
+        **분석 원칙:**
+        - 사실 기반 평가 (프로필과 인터뷰 답변에 있는 내용만 사용)
+        - 추정 및 과장 금지 (언급되지 않은 내용을 만들어내지 말 것)
+        - 행동 기반 평가 (실제로 드러난 행동과 경험에 더 집중하여 분석)
+        - 직무 유관 경험 우선 평가 (직무에서 필요로 하는 역량을 중심으로 분석, 직무와 무관하면 제외)
+        - 종합적 해석과 구체적 서술 (명확한 키워드를 포함하여 정리)
+        """),
+        ("user", all_questions_and_answers),
+        #TODO: 직군에 대한 데이터/설명 (업무 및 핵심 역량)
     ])
-
     settings = get_settings()
     llm = ChatOpenAI(
         model="gpt-4o",
         temperature=0.3,
         api_key=settings.OPENAI_API_KEY
     ).with_structured_output(GeneralInterviewAnalysis)
-
     return (prompt | llm).invoke({})
 
+
+
+# ===================================================================
+# 수정
 
 def analyze_general_interview_for_card(
     candidate_profile: CandidateProfile,
